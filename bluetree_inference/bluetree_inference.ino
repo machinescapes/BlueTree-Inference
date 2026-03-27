@@ -105,7 +105,10 @@ void setup() {
     ei_printf("ERR: AudioBoardStream begin() failed — check codec wiring\n");
     while (true) delay(1000);
   }
-  ei_printf("Audio codec initialised (ES8311/ES7210)\n");
+
+  // Let the codec handle mic gain instead of blind software scaling
+  audioBoard.setInputVolume(0.8f); // 0.0–1.0, maps to ES7210 gain stages
+  ei_printf("Audio codec initialised (ES8311/ES7210), input gain set to 80%%\n");
 
   // ── Classifier init ──
   run_classifier_init();
@@ -181,6 +184,11 @@ void loop() {
 static void capture_samples(void *arg) {
   const size_t bytes_to_read = AUDIO_READ_SIZE * sizeof(int16_t);
 
+  // Diagnostics
+  unsigned long diag_last_ms = millis();
+  unsigned long diag_sample_count = 0;
+  bool raw_dumped = false;
+
   while (record_status) {
     size_t bytesRead = audioBoard.readBytes((uint8_t *)readBuffer, bytes_to_read);
     size_t samplesRead = bytesRead / sizeof(int16_t);
@@ -190,10 +198,25 @@ static void capture_samples(void *arg) {
       continue;
     }
 
-    // Scale up (codec output can be quiet)
-    for (size_t x = 0; x < samplesRead; x++) {
-      readBuffer[x] = (int16_t)(readBuffer[x] * 8);
+    // ── Diagnostic: dump first 32 raw samples once ──
+    if (!raw_dumped && samplesRead > 0) {
+      ei_printf("[DIAG] Raw samples (pre-gain): ");
+      for (int i = 0; i < 32 && i < (int)samplesRead; i++) {
+        ei_printf("%d ", readBuffer[i]);
+      }
+      ei_printf("\n");
+      raw_dumped = true;
     }
+
+    // ── Diagnostic: measure actual sample rate every 5 seconds ──
+    diag_sample_count += samplesRead;
+    if (millis() - diag_last_ms >= 5000) {
+      ei_printf("[DIAG] Actual sample rate: %lu Hz\n", diag_sample_count / 5);
+      diag_sample_count = 0;
+      diag_last_ms = millis();
+    }
+
+    // No blind * 8 — codec input gain handles levels now
 
     // Feed into double-buffer
     for (size_t i = 0; i < samplesRead; i++) {
